@@ -16,18 +16,21 @@ def create_compound_image(rows, cols, limages):
 
     return compound_img
 
-def compute_vij(H, i, j):
-    v_ij = np.array([
-        H[0, i]*H[0, j],
-        H[0, i]*H[1, j] + H[1, i]*H[0, j],
-        H[1, i]*H[1, j],
-        H[2, i]*H[0, j] + H[0, i]*H[2, j],
-        H[2, i]*H[1, j] + H[1, i]*H[2, j],
-        H[2, i]*H[2, j]
-    ])
+def get_valid_images(images_path, grid_size):
     
-    return v_ij
-
+    valid_images = []
+    valid_indexes = []
+    
+    for i, p in enumerate(images_path):
+        
+        im = cv2.imread(p)
+        return_value, _ = cv2.findChessboardCorners(im, patternSize=grid_size, corners=None)
+        
+        if return_value:
+            valid_images.append(p)
+            valid_indexes.append(i)
+        
+    return valid_images, valid_indexes
 
 def get_corners(img_path, grid_size, criteria):
     
@@ -43,21 +46,50 @@ def get_corners(img_path, grid_size, criteria):
         
     return corners
 
+def compute_vij(H, i, j):
+    return np.array([
+        H[0, i]*H[0, j],
+        H[0, i]*H[1, j] + H[1, i]*H[0, j],
+        H[1, i]*H[1, j],
+        H[2, i]*H[0, j] + H[0, i]*H[2, j],
+        H[2, i]*H[1, j] + H[1, i]*H[2, j],
+        H[2, i]*H[2, j]
+    ])
+    
+def zhang_method(H, index_images):
+    n = len(index_images)
+    
+    V = np.zeros((2*n, 6))
 
-def get_valid_images(images_path, grid_size):
-    
-    valid_images = []
-    
-    for p in images_path:
-        
-        im = cv2.imread(p)
-        return_value, _ = cv2.findChessboardCorners(im, patternSize=grid_size, corners=None)
-        
-        if return_value:
-            valid_images.append(p)
-        
-    return valid_images
-        
+    for i, img_idx in enumerate(index_images):
+        v11 = compute_vij(H[:, :, img_idx], 0, 0)
+        v12 = compute_vij(H[:, :, img_idx], 0, 1)
+        v22 = compute_vij(H[:, :, img_idx], 1, 1)
+
+        V_i = np.vstack((v12, (v11-v22)))
+
+        V[i*2:(i*2)+2, :] = V_i
+
+    U, S, Vb = np.linalg.svd(V)
+
+    b = Vb.transpose()[:,-1]
+
+    if b[0] < 0:
+        b = -b
+
+    B = np.array([
+        [b[0], b[1], b[3]],
+        [b[1], b[2], b[4]],
+        [b[3], b[4], b[5]]
+    ])
+
+    L = np.linalg.cholesky(B)
+    L_transpose = L.T
+
+    K = np.linalg.inv(L_transpose)
+
+    return K / K[2, 2]
+
         
 def get_cylinder(n_points, r, h, x, y, P_img):
     theta = np.linspace(0, 2*np.pi, n_points)
