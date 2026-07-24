@@ -125,3 +125,129 @@ def get_cylinder(n_points, r, h, x, y, P_img):
     top_int = np.round(reprojected_cyl_h).astype(int)
     
     return base_int, top_int
+
+def from_R_to_Rodrigues(R):
+    # axis-angle representation from robotics course
+    acos_arg = np.clip((np.trace(R)-1)/2, -1.0, 1.0)
+    theta = np.arccos(acos_arg)
+    
+    k = np.array([
+        R[2,1] - R[1,2],
+        R[0,2] - R[2,0],
+        R[1,0] - R[0,1]
+    ]) / (2*np.sin(theta))
+    
+    # from the zhang's paper
+    return theta*k
+
+def from_Rodrigues_to_R(r):
+    # unroll from the previous notation
+    theta = np.linalg.norm(r)
+    k = r/theta
+    
+    # skew-symmetric matrix defined by Rodrigues
+    K = np.array([
+        [0, -k[2], k[1]],
+        [k[2], 0, -k[0]],
+        [-k[1], k[0], 0]
+    ])
+    
+    return np.eye(3) + np.sin(theta)*K + (1-np.cos(theta))*np.dot(K,K)
+
+def get_corners_stacked(corners):
+    full_corners = 0
+    for i in range(len(corners)):
+        full_corners = np.vstack([full_corners, np.resize(corners[i], (len(corners[i])*2, 1))])  
+
+    return full_corners[1:]
+
+def get_real_world_coord(corners, grid_size, square_size):
+    real_coords = np.zeros((len(corners[0]), 4))
+    for index, corner in enumerate(corners[0]):
+        u_coord = corner[0]
+        v_coord = corner[1]
+                    
+        grid_size_cv2 = tuple(reversed(grid_size))
+        u_index, v_index = np.unravel_index(index, grid_size_cv2)
+                    
+        x_mm = (u_index)*square_size
+        y_mm = (v_index)*square_size
+                    
+        m_i = np.array([x_mm, y_mm, 0, 1])
+        real_coords[index, :] = m_i
+            
+    return real_coords
+
+def get_reprojections_stacked(real_coords, P):
+    
+    N = P.shape[2]
+    full_projections = np.zeros((N, real_coords.shape[0], 2))
+    for i in range(N):
+        projections_i = np.dot(P[:, :, i], real_coords.T).T
+        
+        u_proj = projections_i[:, 0]/projections_i[:, 2]
+        v_proj = projections_i[:, 1]/projections_i[:, 2]
+        
+        full_projections[i] = np.column_stack([u_proj, v_proj])
+
+    return full_projections.reshape(-1, 1)
+
+def stack_parameters(K, R, t):
+    N = R.shape[2]
+    
+    K_stacked = np.array([[K[0, 0]], [K[1, 1]], [K[0, 2]], [K[1, 2]]])
+
+    rt_stacked = 0
+    for i in range(N):
+        r = from_R_to_Rodrigues(R[:, :, i]).reshape(3,1)
+        rt_stacked = np.vstack([rt_stacked, r, t[:, i].reshape(3,1)])
+        
+    rt_stacked = rt_stacked[1:]
+
+    params = np.vstack([K_stacked, rt_stacked])
+    
+    return params.squeeze()
+
+def unstack_parameters(params, N):
+    alpha_u, alpha_v, u_0, v_0 = params[:4]
+        
+    K = np.array([[alpha_u, 0, u_0],
+                    [0, alpha_v, v_0],
+                    [0, 0, 1]])
+        
+    R = np.zeros((3, 3, N))
+    t = np.zeros((3, N))
+    P = np.zeros((3, 4, N))
+        
+    idx = 4
+    for i in range(N):
+        r_i = params[idx:idx+3]
+        t_i = params[idx+3:idx+6]
+        idx += 6
+            
+        R[:, :, i] = from_Rodrigues_to_R(r_i)
+        t[:, i] = t_i
+    
+    return K, R, t
+        
+        
+# least-square fun 
+# projected_coordinates has 
+def ls_fun(x, real_coords, corners):
+    
+    N = len(corners)
+    
+    K, R, t = unstack_parameters(x, N)   
+    P = np.zeros((3, 4, N))
+    
+    for i in range(N):
+        
+        Q = np.dot(K, R[:, :, i])
+        q = np.dot(K, t[:, i].reshape(3,1))
+    
+        P[:, :, i] = np.hstack([Q, q])
+    
+    corners_stacked = get_corners_stacked(corners)
+    reprojections_stacked = get_reprojections_stacked(real_coords, P)
+    
+    return (corners_stacked-reprojections_stacked).squeeze()
